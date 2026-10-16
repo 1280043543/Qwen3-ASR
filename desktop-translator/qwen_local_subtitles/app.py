@@ -135,6 +135,11 @@ class MainWindow(QMainWindow):
         self.language = QComboBox()
         self.language.addItems(["Chinese", "English", "Japanese", "Korean", "French", "German", "Spanish"])
         card_layout.addWidget(self.language)
+        self.caption_mode = QComboBox()
+        self.caption_mode.addItem("语义优先：减少短语被拆开（最长收集 4 秒）", "meaning")
+        self.caption_mode.addItem("速度优先：更快出字幕（最长收集 2 秒）", "speed")
+        card_layout.addWidget(QLabel("字幕模式"))
+        card_layout.addWidget(self.caption_mode)
         page.addWidget(card)
 
         buttons = QHBoxLayout()
@@ -211,10 +216,16 @@ class MainWindow(QMainWindow):
         self.devices.setEnabled(False)
         self.refresh_button.setEnabled(False)
         self.language.setEnabled(False)
+        self.caption_mode.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.status.setText("正在启动本地识别…")
         self.thread = QThread(self)
-        self.engine = SubtitleEngine(device_id, EngineConfig(target_language=self.language.currentText()))
+        meaning_first = self.caption_mode.currentData() == "meaning"
+        self.engine = SubtitleEngine(device_id, EngineConfig(
+            target_language=self.language.currentText(),
+            max_utterance_seconds=4.0 if meaning_first else 2.0,
+            utterance_silence_seconds=0.45 if meaning_first else 0.3,
+        ))
         self.engine.moveToThread(self.thread)
         self.thread.started.connect(self.engine.run)
         self.engine.status.connect(self.status.setText)
@@ -238,6 +249,7 @@ class MainWindow(QMainWindow):
         self.devices.setEnabled(True)
         self.refresh_button.setEnabled(True)
         self.language.setEnabled(True)
+        self.caption_mode.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.thread = None
         self.engine = None
@@ -291,5 +303,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
