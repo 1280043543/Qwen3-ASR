@@ -10,7 +10,7 @@ Audio and subtitle text stay on this computer. The first run downloads model wei
 - Qwen3-ASR 0.6B recognition on the local machine.
 - Local translation through Ollama (default model: `qwen3:4b-instruct-2507-q4_K_M`).
 - Main control window and always-on-top subtitle overlay.
-- Audio capture runs continuously in a separate reader. Local RMS-based voice activity segments phrases after a pause (up to 3 seconds per phrase); a bounded 8-second queue prevents slow inference from blocking capture. This is still chunked recognition rather than token streaming, and latency/voice threshold need real-world tuning.
+- Audio capture runs continuously in 100 ms blocks. Local RMS-based voice activity ends a phrase after 300 ms of silence or at most 2 seconds of audio; a bounded 8-second queue prevents slow inference from blocking capture. Startup audio is discarded once models are ready so subtitles start from current playback. This is still chunked recognition rather than token streaming, and latency/voice threshold need real-world tuning.
 
 ## Install and run
 
@@ -29,4 +29,5 @@ On first launch, Qwen3-ASR weights are downloaded from Hugging Face and cached l
 - Ollama must be running locally and the selected model must be present.
 - Models are separate downloads and retain their own licenses. The ASR code in this repository is Apache-2.0; review each model's card/license before redistribution.
 - If local inference falls behind, the app drops the oldest buffered audio to keep captions near the current playback position; it shows a status notice when this happens. GPU memory use depends on the ASR and Ollama model versions. If model loading fails, close other GPU-heavy applications or use CPU mode (slower).
+
 

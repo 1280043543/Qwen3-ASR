@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+import logging
+import math
 import queue
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass
 
@@ -14,6 +17,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from qwen_asr import Qwen3ASRModel
 
 SYSTEM_DEFAULT_DEVICE = "__system_default__"
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -23,10 +27,10 @@ class EngineConfig:
     translation_model: str = "qwen3:4b-instruct-2507-q4_K_M"
     ollama_url: str = "http://127.0.0.1:11434"
     sample_rate: int = 16_000
-    capture_frame_seconds: float = 0.25
-    utterance_silence_seconds: float = 0.55
-    max_utterance_seconds: float = 3.0
-    min_utterance_seconds: float = 0.55
+    capture_frame_seconds: float = 0.1
+    utterance_silence_seconds: float = 0.3
+    max_utterance_seconds: float = 2.0
+    min_utterance_seconds: float = 0.5
     voice_rms_threshold: float = 0.006
     max_buffer_seconds: float = 8.0
 
@@ -80,6 +84,8 @@ class SubtitleEngine(QObject):
             self._check_ollama()
             if self._stop_event.is_set():
                 return
+            # Start from current playback, not audio recorded while model weights loaded.
+            self._reset_audio_buffer()
             self.status.emit(f"正在监听：{self._active_device_name}")
             self._transcribe_utterances(model)
         except Exception as exc:
@@ -161,9 +167,9 @@ class SubtitleEngine(QObject):
     def _transcribe_utterances(self, model: Qwen3ASRModel) -> None:
         cfg = self.config
         frame_seconds = cfg.capture_frame_seconds
-        silence_frames_needed = max(1, int(cfg.utterance_silence_seconds / frame_seconds))
-        max_frames = max(1, int(cfg.max_utterance_seconds / frame_seconds))
-        min_frames = max(1, int(cfg.min_utterance_seconds / frame_seconds))
+        silence_frames_needed = max(1, math.ceil(cfg.utterance_silence_seconds / frame_seconds))
+        max_frames = max(1, math.ceil(cfg.max_utterance_seconds / frame_seconds))
+        min_frames = max(1, math.ceil(cfg.min_utterance_seconds / frame_seconds))
         pre_roll: deque[np.ndarray] = deque(maxlen=2)
         utterance: list[np.ndarray] = []
         silent_frames = 0
@@ -172,7 +178,7 @@ class SubtitleEngine(QObject):
             try:
                 frame = self._audio_queue.get(timeout=0.2)
             except queue.Empty:
-                # The capture reader can be between 250 ms recording calls; silence frames
+                # The capture reader can be between recording calls; silence frames
                 # from the device, rather than a temporarily empty queue, end an utterance.
                 continue
 
@@ -212,12 +218,24 @@ class SubtitleEngine(QObject):
             return
         if float(np.sqrt(np.mean(np.square(audio)))) < self.config.voice_rms_threshold:
             return
+        queued_seconds = self._audio_queue.qsize() * self.config.capture_frame_seconds
+        started = time.perf_counter()
         result = model.transcribe(audio=(audio, self.config.sample_rate), language=None)
+        asr_seconds = time.perf_counter() - started
         text = result[0].text.strip() if result else ""
         if not text:
             return
         self.transcript.emit(text)
+        translation_started = time.perf_counter()
         translated = self._translate(text)
+        translation_seconds = time.perf_counter() - translation_started
+        LOGGER.info(
+            "Subtitle timing audio=%.2fs queue=%.2fs asr=%.3fs translation=%.3fs",
+            audio.size / self.config.sample_rate,
+            queued_seconds,
+            asr_seconds,
+            translation_seconds,
+        )
         if translated:
             self.translation.emit(translated)
 
@@ -266,4 +284,5 @@ class SubtitleEngine(QObject):
         )
         response.raise_for_status()
         return response.json().get("message", {}).get("content", "").strip()
+
 
