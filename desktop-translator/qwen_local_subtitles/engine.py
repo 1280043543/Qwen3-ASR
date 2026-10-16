@@ -49,18 +49,24 @@ class SubtitleEngine(QObject):
     error = Signal(str)
     finished = Signal()
     audio_level = Signal(float)
+    model_ready = Signal(object)
 
-    def __init__(self, device_id: str, config: EngineConfig | None = None) -> None:
+    def __init__(self, device_id: str, config: EngineConfig | None = None, model=None) -> None:
         super().__init__()
         self.device_id = device_id
         self.config = config or EngineConfig()
         self._stop_event = threading.Event()
-        frame_count = max(1, int(self.config.max_buffer_seconds / self.config.capture_frame_seconds))
+        frame_count = max(2, int(self.config.max_buffer_seconds / self.config.capture_frame_seconds))
         self._audio_queue: queue.Queue[np.ndarray | None] = queue.Queue(maxsize=frame_count)
         self._dropped_frames = 0
         self._error_message: str | None = None
         self._active_device_name = ""
         self._translation_context: deque[str] = deque(maxlen=3)
+        self.model = model
+        self._audio_lock = threading.RLock()
+        self._audio_generation = 0
+        self._segment_generation = 0
+        self._translation_failed = False
 
     @Slot()
     def run(self) -> None:
@@ -73,13 +79,15 @@ class SubtitleEngine(QObject):
             # Begin capture before loading the model so startup downloads don't freeze the audio path.
             self.status.emit("正在缓存系统音频并加载本地语音识别模型…")
             capture_thread.start()
-            dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-            model = Qwen3ASRModel.from_pretrained(
-                self.config.asr_model,
-                dtype=dtype,
-                device_map="cuda:0" if torch.cuda.is_available() else "cpu",
-                max_new_tokens=128,
-            )
+            if self.model is None:
+                dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+                self.model = Qwen3ASRModel.from_pretrained(
+                    self.config.asr_model,
+                    dtype=dtype,
+                    device_map="cuda:0" if torch.cuda.is_available() else "cpu",
+                    max_new_tokens=256,
+                )
+            self.model_ready.emit(self.model)
             if self._stop_event.is_set():
                 return
             self.status.emit("正在加载本地翻译模型…")
@@ -89,7 +97,7 @@ class SubtitleEngine(QObject):
             # Start from current playback, not audio recorded while model weights loaded.
             self._reset_audio_buffer()
             self.status.emit(f"正在监听：{self._active_device_name}")
-            self._transcribe_utterances(model)
+            self._transcribe_utterances(self.model)
         except Exception as exc:
             self._error_message = f"{type(exc).__name__}: {exc}"
             self.error.emit(self._error_message)
@@ -98,7 +106,8 @@ class SubtitleEngine(QObject):
             if capture_thread.is_alive():
                 capture_thread.join(timeout=2.0)
             if self._error_message is None:
-                self.status.emit("已停止")
+                self.status.emit("已暂停，识别模型保留；可继续监听或释放识别模型")
+            self.model = None
             self.finished.emit()
 
     def stop(self) -> None:
@@ -135,17 +144,7 @@ class SubtitleEngine(QObject):
                             if mono.ndim == 2:
                                 mono = mono.mean(axis=1)
                             self.audio_level.emit(float(np.sqrt(np.mean(np.square(mono)))))
-                            try:
-                                self._audio_queue.put_nowait(mono)
-                            except queue.Full:
-                                try:
-                                    self._audio_queue.get_nowait()
-                                except queue.Empty:
-                                    pass
-                                self._audio_queue.put_nowait(mono)
-                                self._dropped_frames += 1
-                                if self._dropped_frames % 20 == 1:
-                                    self.status.emit("本地模型处理较慢，已丢弃较早音频以保持字幕接近实时")
+                            self._enqueue_audio(mono)
                 except Exception:
                     current = sc.default_speaker() if follow_default else None
                     if current is not None and current.id != source_id:
@@ -158,13 +157,25 @@ class SubtitleEngine(QObject):
                 self._stop_event.set()
 
     def _reset_audio_buffer(self) -> None:
-        while True:
+        with self._audio_lock:
+            self._audio_generation += 1
+            while True:
+                try:
+                    self._audio_queue.get_nowait()
+                except queue.Empty:
+                    break
+            # A gap ends the old phrase and invalidates work already in flight.
+            self._audio_queue.put_nowait(None)
+
+    def _enqueue_audio(self, frame: np.ndarray) -> None:
+        with self._audio_lock:
             try:
-                self._audio_queue.get_nowait()
-            except queue.Empty:
-                break
-        # A source change ends the old utterance; don't combine two different devices.
-        self._audio_queue.put_nowait(None)
+                self._audio_queue.put_nowait(frame)
+            except queue.Full:
+                self._dropped_frames += self._audio_queue.qsize()
+                self._reset_audio_buffer()
+                self._audio_queue.put_nowait(frame)
+                self.status.emit("音频处理积压，已跳到当前播放位置并重置上下文")
 
     def _transcribe_utterances(self, model: Qwen3ASRModel) -> None:
         cfg = self.config
@@ -175,6 +186,7 @@ class SubtitleEngine(QObject):
         pre_roll: deque[np.ndarray] = deque(maxlen=2)
         utterance: list[np.ndarray] = []
         silent_frames = 0
+        previous_segment: list[np.ndarray] = []
 
         while not self._stop_event.is_set():
             try:
@@ -186,6 +198,8 @@ class SubtitleEngine(QObject):
 
             if frame is None:
                 self._translation_context.clear()
+                self._segment_generation = self._audio_generation
+                previous_segment = []
                 utterance = []
                 pre_roll.clear()
                 silent_frames = 0
@@ -205,17 +219,23 @@ class SubtitleEngine(QObject):
             else:
                 silent_frames = 0
 
-            if silent_frames >= silence_frames_needed or len(utterance) >= max_frames:
-                self._transcribe(model, utterance, min_frames)
+            paused = silent_frames >= silence_frames_needed
+            # Finish an already-started pause instead of cutting just before it ends.
+            hard_cut = len(utterance) >= max_frames and silent_frames == 0
+            if paused or hard_cut:
+                self._transcribe(model, previous_segment + utterance, min_frames)
+                # Bound revisions to two neighboring segments, never an entire video.
+                previous_segment = utterance if hard_cut else []
                 utterance = []
                 silent_frames = 0
                 pre_roll.clear()
 
-        # Flush a final short phrase on user stop.
-        if utterance:
-            self._transcribe(model, utterance, min_frames)
+        # Pausing discards unfinished audio rather than launching another inference.
 
     def _transcribe(self, model: Qwen3ASRModel, frames: list[np.ndarray], min_frames: int) -> None:
+        generation = self._segment_generation
+        if generation != self._audio_generation:
+            return
         audio = np.concatenate(frames)
         if len(frames) < min_frames:
             return
@@ -226,11 +246,19 @@ class SubtitleEngine(QObject):
         result = model.transcribe(audio=(audio, self.config.sample_rate), language=None)
         asr_seconds = time.perf_counter() - started
         text = result[0].text.strip() if result else ""
-        if not text:
+        if not text or generation != self._audio_generation or self._stop_event.is_set():
             return
         self.transcript.emit(text)
         translation_started = time.perf_counter()
-        translated = self._translate(text)
+        try:
+            translated = self._translate(text)
+        except (requests.RequestException, ValueError, TypeError, AttributeError):
+            LOGGER.warning("Local translation failed; retaining transcript and continuing", exc_info=True)
+            if generation == self._audio_generation:
+                self._translation_failed = True
+                self.translation.emit("翻译暂不可用（已保留原文）")
+                self.status.emit("本段翻译失败，已保留原文；继续监听，下一段自动尝试翻译")
+            return
         translation_seconds = time.perf_counter() - translation_started
         LOGGER.info(
             "Subtitle timing audio=%.2fs queue=%.2fs asr=%.3fs translation=%.3fs",
@@ -239,8 +267,14 @@ class SubtitleEngine(QObject):
             asr_seconds,
             translation_seconds,
         )
+        if generation != self._audio_generation or self._stop_event.is_set():
+            self._translation_context.clear()
+            return
         if translated:
             self.translation.emit(translated)
+            if self._translation_failed:
+                self._translation_failed = False
+                self.status.emit(f"翻译已恢复，正在监听：{self._active_device_name}")
 
     def _check_ollama(self) -> None:
         response = requests.get(f"{self.config.ollama_url}/api/tags", timeout=3)
@@ -257,6 +291,7 @@ class SubtitleEngine(QObject):
             json={
                 "model": self.config.translation_model,
                 "stream": False,
+                "keep_alive": "30m",
                 "options": {"num_ctx": 2048},
             },
             timeout=(3, 180),
@@ -272,6 +307,7 @@ class SubtitleEngine(QObject):
                 "model": self.config.translation_model,
                 "stream": False,
                 "think": False,
+                "keep_alive": "30m",
                 "messages": [
                     {
                         "role": "system",
@@ -295,13 +331,15 @@ class SubtitleEngine(QObject):
                 ],
                 "options": {"temperature": 0, "num_ctx": 2048, "num_predict": 256},
             },
-            timeout=45,
+            timeout=(2, 8),
         )
         response.raise_for_status()
         translated = response.json().get("message", {}).get("content", "").strip()
-        if translated:
-            self._translation_context.append(text[-600:])
+        if not translated:
+            raise ValueError("Local translation returned an empty subtitle")
+        self._translation_context.append(text[-600:])
         return translated
+
 
 
 

@@ -1,4 +1,5 @@
 import unittest
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -51,11 +52,14 @@ class DefaultOutputCaptureTests(unittest.TestCase):
         import os
         os.environ['QT_QPA_PLATFORM'] = 'offscreen'
         from PySide6.QtWidgets import QApplication
+        from PySide6.QtCore import QSettings
         from qwen_local_subtitles.app import MainWindow
         app = QApplication.instance() or QApplication([])
         devices = [('speakers', 'Speakers')]
-        with patch('qwen_local_subtitles.app.available_loopbacks', side_effect=lambda: list(devices)):
-            window = MainWindow()
+        with tempfile.TemporaryDirectory() as folder, \
+             patch('qwen_local_subtitles.app.available_loopbacks', side_effect=lambda: list(devices)):
+            settings = QSettings(folder + '/settings.ini', QSettings.Format.IniFormat)
+            window = MainWindow(settings=settings)
             self.assertEqual(window.devices.currentData(), '__system_default__')
             devices.append(('headphones', 'Headphones'))
             window.refresh_devices()
@@ -66,5 +70,6 @@ class DefaultOutputCaptureTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
 
 

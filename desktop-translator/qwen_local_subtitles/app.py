@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import sys
+import gc
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread
+import torch
+from PySide6.QtCore import Qt, QThread, QTimer, QPropertyAnimation, QSettings, QPoint
 from PySide6.QtGui import QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QFrame,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -16,6 +19,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -40,6 +45,9 @@ QComboBox::drop-down { width: 30px; border: 0; }
 QComboBox::down-arrow { image: url('__CHEVRON__'); width: 14px; height: 14px; }
 QComboBox QAbstractItemView { background: #202d40; color: #e6edf8; border: 1px solid #4a5d7a; selection-background-color: #3954a0; padding: 6px; outline: 0; }
 QComboBox QAbstractItemView::item { min-height: 32px; padding: 4px 8px; }
+QSpinBox { background: #202d40; border: 1px solid #3a4c65; border-radius: 8px; padding: 0 12px; }
+QSlider::groove:horizontal { height: 6px; background: #35465e; border-radius: 3px; }
+QSlider::handle:horizontal { width: 16px; margin: -5px 0; border-radius: 8px; background: #91adff; }
 QPushButton { background: #293a52; border: 1px solid #3a4c66; border-radius: 8px; padding: 0 18px; font-weight: 600; }
 QPushButton:hover { background: #354a68; border-color: #6b88bc; }
 QPushButton:pressed { background: #21324a; }
@@ -58,7 +66,7 @@ class Overlay(QFrame):
         super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setObjectName("subtitleOverlay")
-        self.setMinimumWidth(720)
+        self.setMinimumWidth(320)
         self.resize(800, 180)
         self.setCursor(Qt.CursorShape.SizeAllCursor)
         self.setWindowTitle("Qwen Local Subtitles")
@@ -83,10 +91,45 @@ class Overlay(QFrame):
             layout.addWidget(label)
         self.setStyleSheet("QFrame#subtitleOverlay { background:rgba(8,12,18,225);border:1px solid rgba(255,255,255,36);border-radius:12px; }")
         self._drag_offset = None
+        self.expiry_timer = QTimer(self)
+        self.expiry_timer.setSingleShot(True)
+        self.fade_animation = QPropertyAnimation(self, b"windowOpacity", self)
+        self.fade_animation.setDuration(400)
+        self.fade_animation.setStartValue(1.0)
+        self.fade_animation.setEndValue(0.0)
+        self.expiry_timer.timeout.connect(self.fade_animation.start)
+        self.fade_animation.finished.connect(self.hide)
 
     def set_text(self, original: str, translated: str) -> None:
+        self.fade_animation.stop()
+        self.setWindowOpacity(1.0)
         self.original.setText(original)
         self.translated.setText(translated)
+        self.fit_to_screen()
+        self.expiry_timer.start(6000)
+
+    def reveal(self) -> None:
+        self.fade_animation.stop()
+        self.setWindowOpacity(1.0)
+        self.show()
+        self.expiry_timer.start(6000)
+
+    def fit_to_screen(self, screen=None) -> None:
+        area = (screen or self.screen()).availableGeometry()
+        self.setFixedWidth(min(800, max(1, area.width() - 32)))
+        self.setMaximumHeight(max(1, area.height() - 32))
+        self.adjustSize()
+        self.move(
+            max(area.left() + 16, min(self.x(), area.right() - self.width() - 15)),
+            max(area.top() + 16, min(self.y(), area.bottom() - self.height() - 15)),
+        )
+
+    def apply_appearance(self, size: int, color: str, opacity: int) -> None:
+        self.original.setStyleSheet(f"color:#dce4ef;font-size:{max(14, size * 2 // 3)}px;background:transparent;")
+        self.translated.setStyleSheet(f"color:{color};font-size:{size}px;font-weight:700;background:transparent;")
+        alpha = round(255 * opacity / 100)
+        self.setStyleSheet(f"QFrame#subtitleOverlay {{ background:rgba(8,12,18,{alpha});border:1px solid rgba(255,255,255,36);border-radius:12px; }}")
+        self.fit_to_screen()
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -109,13 +152,16 @@ class Overlay(QFrame):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, settings: QSettings | None = None) -> None:
         super().__init__()
         self.setWindowTitle("Qwen 本地实时字幕")
         self.setMinimumSize(620, 520)
         self.resize(800, 820)
         self.setStyleSheet(STYLE.replace("__CHEVRON__", (ASSET_DIR / "chevron.svg").as_posix()))
         self.overlay = Overlay()
+        self.settings = settings if settings is not None else QSettings("QwenLocalSubtitles", "Desktop")
+        self._asr_model = None
+        self._overlay_enabled = False
         self._overlay_positioned = False
         self.thread: QThread | None = None
         self.engine: SubtitleEngine | None = None
@@ -198,16 +244,51 @@ class MainWindow(QMainWindow):
         self.start_button = QPushButton("开始监听")
         self.start_button.setObjectName("start")
         self.start_button.clicked.connect(self.start_capture)
-        self.stop_button = QPushButton("停止")
+        self.stop_button = QPushButton("暂停")
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop_capture)
-        self.overlay_button = QPushButton("显示字幕")
+        self.release_button = QPushButton("释放识别模型")
+        self.release_button.setEnabled(False)
+        self.release_button.clicked.connect(self.release_model)
+        self.overlay_button = QPushButton("开启悬浮字幕")
         self.overlay_button.clicked.connect(self.toggle_overlay)
         buttons.addWidget(self.start_button)
         buttons.addWidget(self.stop_button)
+        buttons.addWidget(self.release_button)
         buttons.addStretch()
         buttons.addWidget(self.overlay_button)
         page.addLayout(buttons)
+
+        appearance_toggle = QPushButton("字幕外观 ▾")
+        appearance_toggle.setCheckable(True)
+        appearance_toggle.setFixedHeight(36)
+        page.addWidget(appearance_toggle)
+        appearance = QFrame()
+        appearance.setObjectName("card")
+        appearance_form = QFormLayout(appearance)
+        appearance_form.setContentsMargins(18, 14, 18, 14)
+        appearance_form.setSpacing(12)
+        self.font_size = QSpinBox()
+        self.font_size.setRange(16, 48)
+        self.font_size.setSuffix(" px")
+        self.font_size.setFixedHeight(40)
+        self.subtitle_color = QComboBox()
+        for label, color in [("白色", "#ffffff"), ("暖黄色", "#ffe08a"), ("浅青色", "#8ce9ef")]:
+            self.subtitle_color.addItem(label, color)
+        self.subtitle_color.setFixedHeight(40)
+        self.background_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.background_opacity.setRange(20, 95)
+        opacity_row = QHBoxLayout()
+        opacity_row.addWidget(self.background_opacity)
+        self.opacity_label = QLabel()
+        self.opacity_label.setMinimumWidth(44)
+        opacity_row.addWidget(self.opacity_label)
+        appearance_form.addRow("字幕字号", self.font_size)
+        appearance_form.addRow("字幕颜色", self.subtitle_color)
+        appearance_form.addRow("背景不透明度", opacity_row)
+        page.addWidget(appearance)
+        appearance.hide()
+        appearance_toggle.toggled.connect(appearance.setVisible)
 
         status_card = QFrame()
         status_card.setObjectName("card")
@@ -251,11 +332,61 @@ class MainWindow(QMainWindow):
         for combo in (self.devices, self.language, self.caption_mode):
             combo.setFixedHeight(44)
             combo.view().setMinimumWidth(280)
-        for button in (self.refresh_button, self.start_button, self.stop_button, self.overlay_button):
+        for button in (self.refresh_button, self.start_button, self.stop_button, self.release_button, self.overlay_button):
             button.setFixedHeight(44)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
         for label in (device_label, language_label, mode_label, status_label, original_title, translated_title):
             label.setMinimumHeight(24)
+        self.language.setCurrentIndex(max(0, self.language.findData(self.settings.value("targetLanguage", "Chinese"))))
+        self.caption_mode.setCurrentIndex(max(0, self.caption_mode.findData(self.settings.value("captionMode", "meaning"))))
+        self.font_size.setValue(self.settings.value("fontSize", 25, type=int))
+        self.subtitle_color.setCurrentIndex(max(0, self.subtitle_color.findData(self.settings.value("subtitleColor", "#ffffff"))))
+        self.background_opacity.setValue(self.settings.value("backgroundOpacity", 88, type=int))
+        if self.settings.contains("mainGeometry"):
+            self.restoreGeometry(self.settings.value("mainGeometry"))
+        if self.settings.contains("overlayPosition"):
+            self.overlay.move(self.settings.value("overlayPosition", QPoint(300, 500)))
+            self._overlay_positioned = True
+        self.update_appearance()
+        for control in (self.font_size, self.background_opacity):
+            control.valueChanged.connect(self.update_appearance)
+        self.subtitle_color.currentIndexChanged.connect(self.update_appearance)
+        self.language.currentIndexChanged.connect(self.save_settings)
+        self.caption_mode.currentIndexChanged.connect(self.save_settings)
+
+    def update_appearance(self, *_args) -> None:
+        self.opacity_label.setText(f"{self.background_opacity.value()}%")
+        self.overlay.apply_appearance(self.font_size.value(), self.subtitle_color.currentData(), self.background_opacity.value())
+        self.save_settings()
+
+    def save_settings(self, *_args) -> None:
+        for key, value in {
+            "targetLanguage": self.language.currentData(),
+            "captionMode": self.caption_mode.currentData(),
+            "fontSize": self.font_size.value(),
+            "subtitleColor": self.subtitle_color.currentData(),
+            "backgroundOpacity": self.background_opacity.value(),
+            "mainGeometry": self.saveGeometry(),
+        }.items():
+            self.settings.setValue(key, value)
+        if self._overlay_positioned:
+            self.settings.setValue("overlayPosition", self.overlay.pos())
+        self.settings.sync()
+
+    def remember_model(self, model) -> None:
+        self._asr_model = model
+        self.release_button.setEnabled(self.thread is None)
+
+    def release_model(self) -> None:
+        if self.thread is not None:
+            return
+        self._asr_model = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        self.release_button.setEnabled(False)
+        self.start_button.setText("开始监听")
+        self.status.setText("识别模型已释放；下次开始监听需要重新加载。")
 
     def refresh_devices(self) -> None:
         selected = self.devices.currentData()
@@ -282,6 +413,7 @@ class MainWindow(QMainWindow):
         self.language.setEnabled(False)
         self.caption_mode.setEnabled(False)
         self.stop_button.setEnabled(True)
+        self.release_button.setEnabled(False)
         self.status.setText("正在启动本地识别…")
         self.thread = QThread(self)
         meaning_first = self.caption_mode.currentData() == "meaning"
@@ -289,7 +421,7 @@ class MainWindow(QMainWindow):
             target_language=self.language.currentData(),
             max_utterance_seconds=4.0 if meaning_first else 2.0,
             utterance_silence_seconds=0.45 if meaning_first else 0.3,
-        ))
+        ), model=self._asr_model)
         self.engine.moveToThread(self.thread)
         self.thread.started.connect(self.engine.run)
         self.engine.status.connect(self.status.setText)
@@ -297,16 +429,18 @@ class MainWindow(QMainWindow):
         self.engine.translation.connect(self.show_translation)
         self.engine.error.connect(self.show_error)
         self.engine.audio_level.connect(self.show_audio_level)
+        self.engine.model_ready.connect(self.remember_model)
         self.engine.finished.connect(self.thread.quit)
         self.engine.finished.connect(self.engine.deleteLater)
         self.thread.finished.connect(self.capture_finished)
+        self.thread.finished.connect(self.thread.deleteLater)
         self.thread.start()
 
     def stop_capture(self) -> None:
         if self.engine:
             self.engine.stop()
         self.stop_button.setEnabled(False)
-        self.status.setText("正在停止，等待当前识别任务结束…")
+        self.status.setText("正在暂停，等待当前识别任务结束…")
 
     def capture_finished(self) -> None:
         self.start_button.setEnabled(True)
@@ -317,6 +451,8 @@ class MainWindow(QMainWindow):
         self.stop_button.setEnabled(False)
         self.thread = None
         self.engine = None
+        self.release_button.setEnabled(self._asr_model is not None)
+        self.start_button.setText("继续监听" if self._asr_model is not None else "开始监听")
         self.audio_status.setText("声音输入：未监听")
         if self._close_requested:
             self._close_requested = False
@@ -325,6 +461,8 @@ class MainWindow(QMainWindow):
     def show_translation(self, text: str) -> None:
         self.translated.setText(text)
         self.overlay.set_text(self.original.text(), text)
+        if self._overlay_enabled:
+            self.overlay.reveal()
 
     def show_audio_level(self, level: float) -> None:
         self.audio_status.setText("声音输入：有声音" if level >= 0.006 else "声音输入：安静或无声音")
@@ -333,21 +471,27 @@ class MainWindow(QMainWindow):
         self.status.setText(message)
 
     def toggle_overlay(self) -> None:
-        if self.overlay.isVisible():
+        if self._overlay_enabled:
+            self._overlay_enabled = False
             self.overlay.hide()
-            self.overlay_button.setText("显示字幕")
+            self.overlay_button.setText("开启悬浮字幕")
         else:
+            self._overlay_enabled = True
             if not self._overlay_positioned:
                 screen = self.screen().availableGeometry()
+                self.overlay.fit_to_screen(self.screen())
                 self.overlay.move(
                     screen.x() + (screen.width() - self.overlay.width()) // 2,
                     screen.bottom() - self.overlay.height() - 60,
                 )
                 self._overlay_positioned = True
-            self.overlay.show()
-            self.overlay_button.setText("隐藏字幕")
+            screen = QApplication.screenAt(self.overlay.frameGeometry().center()) or self.screen()
+            self.overlay.fit_to_screen(screen)
+            self.overlay.reveal()
+            self.overlay_button.setText("关闭悬浮字幕")
 
     def closeEvent(self, event) -> None:
+        self.save_settings()
         if self.thread and self.thread.isRunning():
             self._close_requested = True
             self.stop_capture()
@@ -372,6 +516,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
 
