@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import queue
 import threading
-import time
 from collections import deque
 from dataclasses import dataclass
 
@@ -132,10 +131,8 @@ class SubtitleEngine(QObject):
             try:
                 frame = self._audio_queue.get(timeout=0.2)
             except queue.Empty:
-                if utterance:
-                    self._transcribe(model, utterance, min_frames)
-                    utterance = []
-                    silent_frames = 0
+                # The capture reader can be between 250 ms recording calls; silence frames
+                # from the device, rather than a temporarily empty queue, end an utterance.
                 continue
 
             level = float(np.sqrt(np.mean(np.square(frame)))) if frame.size else 0.0
