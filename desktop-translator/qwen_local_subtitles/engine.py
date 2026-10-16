@@ -49,6 +49,7 @@ class SubtitleEngine(QObject):
         frame_count = max(1, int(self.config.max_buffer_seconds / self.config.capture_frame_seconds))
         self._audio_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=frame_count)
         self._dropped_frames = 0
+        self._error_message: str | None = None
 
     @Slot()
     def run(self) -> None:
@@ -73,12 +74,14 @@ class SubtitleEngine(QObject):
             self.status.emit("正在监听系统播放音频")
             self._transcribe_utterances(model)
         except Exception as exc:
-            self.error.emit(f"{type(exc).__name__}: {exc}")
+            self._error_message = f"{type(exc).__name__}: {exc}"
+            self.error.emit(self._error_message)
         finally:
             self._stop_event.set()
             if capture_thread.is_alive():
                 capture_thread.join(timeout=2.0)
-            self.status.emit("已停止")
+            if self._error_message is None:
+                self.status.emit("已停止")
             self.finished.emit()
 
     def stop(self) -> None:
@@ -114,7 +117,8 @@ class SubtitleEngine(QObject):
                             self.status.emit("本地模型处理较慢，已丢弃较早音频以保持字幕接近实时")
         except Exception as exc:
             if not self._stop_event.is_set():
-                self.error.emit(f"系统音频采集失败：{type(exc).__name__}: {exc}")
+                self._error_message = f"系统音频采集失败：{type(exc).__name__}: {exc}"
+                self.error.emit(self._error_message)
                 self._stop_event.set()
 
     def _transcribe_utterances(self, model: Qwen3ASRModel) -> None:
