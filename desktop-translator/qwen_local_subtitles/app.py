@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -11,7 +12,10 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QLayout,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -20,23 +24,40 @@ from .engine import EngineConfig, SubtitleEngine, SYSTEM_DEFAULT_DEVICE, availab
 
 
 STYLE = """
-QWidget { background: #111722; color: #e8edf4; font-family: 'Segoe UI'; font-size: 14px; }
-QMainWindow { background: #111722; }
-QLabel#title { font-size: 25px; font-weight: 700; color: #f8fafc; }
-QLabel#muted { color: #9aa8bb; }
-QLabel#section { color: #91a0b5; font-size: 12px; font-weight: 700; }
-QFrame#card { background: #1a2330; border: 1px solid #2b394c; border-radius: 12px; }
-QComboBox { background: #202c3b; border: 1px solid #394a60; border-radius: 7px; padding: 10px; }
-QPushButton { background: #26354a; border: 0; border-radius: 8px; padding: 11px 18px; font-weight: 600; }
-QPushButton#start { background: #4c83f1; color: white; }
-QPushButton:disabled { color: #78869a; background: #202a38; }
+QWidget { color: #e6edf8; font-family: 'Microsoft YaHei UI', 'Segoe UI'; font-size: 14px; }
+QMainWindow, QWidget#appRoot, QScrollArea { background: #101621; }
+QScrollArea { border: 0; }
+QLabel { background: transparent; border: 0; padding: 0; }
+QLabel#title { font-size: 26px; font-weight: 700; color: #f5f8ff; }
+QLabel#muted { color: #96a5bc; font-size: 13px; }
+QLabel#section { color: #adbbd0; font-size: 13px; font-weight: 600; }
+QFrame#card { background: #192231; border: 1px solid #2b394e; border-radius: 14px; }
+QComboBox { background: #202d40; border: 1px solid #3a4c65; border-radius: 8px; padding: 0 12px; selection-background-color: #3954a0; }
+QComboBox:hover { border-color: #7898ed; }
+QComboBox:focus { border: 1px solid #8ba7ff; }
+QComboBox:disabled { color: #8391a7; background: #1a2535; }
+QComboBox::drop-down { width: 30px; border: 0; }
+QComboBox::down-arrow { image: url('__CHEVRON__'); width: 14px; height: 14px; }
+QComboBox QAbstractItemView { background: #202d40; color: #e6edf8; border: 1px solid #4a5d7a; selection-background-color: #3954a0; padding: 6px; outline: 0; }
+QComboBox QAbstractItemView::item { min-height: 32px; padding: 4px 8px; }
+QPushButton { background: #293a52; border: 1px solid #3a4c66; border-radius: 8px; padding: 0 18px; font-weight: 600; }
+QPushButton:hover { background: #354a68; border-color: #6b88bc; }
+QPushButton:pressed { background: #21324a; }
+QPushButton#start { background: #6389f5; border-color: #6389f5; color: #ffffff; }
+QPushButton#start:hover { background: #789bff; }
+QPushButton:disabled { color: #74839a; background: #1c2839; border-color: #29374a; }
+QScrollBar:vertical { background: #101621; width: 10px; margin: 0; }
+QScrollBar::handle:vertical { background: #3a4a63; border-radius: 5px; min-height: 30px; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 """
+ASSET_DIR = Path(__file__).resolve().parent / "assets"
 
 
 class Overlay(QFrame):
     def __init__(self) -> None:
         super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setObjectName("subtitleOverlay")
         self.setMinimumWidth(720)
         self.resize(800, 180)
         self.setCursor(Qt.CursorShape.SizeAllCursor)
@@ -60,7 +81,7 @@ class Overlay(QFrame):
             label.setTextFormat(Qt.TextFormat.PlainText)
         for label in (self.original, self.translated):
             layout.addWidget(label)
-        self.setStyleSheet("background:rgba(8,12,18,210);border:1px solid rgba(255,255,255,36);border-radius:12px;")
+        self.setStyleSheet("QFrame#subtitleOverlay { background:rgba(8,12,18,225);border:1px solid rgba(255,255,255,36);border-radius:12px; }")
         self._drag_offset = None
 
     def set_text(self, original: str, translated: str) -> None:
@@ -91,24 +112,39 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Qwen 本地实时字幕")
-        self.setMinimumSize(680, 590)
-        self.setStyleSheet(STYLE)
+        self.setMinimumSize(620, 520)
+        self.resize(800, 820)
+        self.setStyleSheet(STYLE.replace("__CHEVRON__", (ASSET_DIR / "chevron.svg").as_posix()))
         self.overlay = Overlay()
         self._overlay_positioned = False
         self.thread: QThread | None = None
         self.engine: SubtitleEngine | None = None
         self._close_requested = False
 
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setCentralWidget(scroll)
         root = QWidget()
-        self.setCentralWidget(root)
+        root.setObjectName("appRoot")
+        scroll.setWidget(root)
         page = QVBoxLayout(root)
+        page.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         page.setContentsMargins(28, 26, 28, 24)
         page.setSpacing(18)
 
+        header = QHBoxLayout()
+        brand = QLabel()
+        brand.setFixedSize(52, 52)
+        brand.setPixmap(QPixmap(str(ASSET_DIR / "app-icon.png")).scaled(
+            52, 52, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        header.addWidget(brand)
+        header.addSpacing(4)
         heading = QLabel("本地实时字幕")
         heading.setObjectName("title")
-        page.addWidget(heading)
-        desc = QLabel("捕获 Windows 正在播放的声音，离线识别并翻译成字幕")
+        header.addWidget(heading, 1)
+        page.addLayout(header)
+        desc = QLabel("让每一段视频，都有你看得懂的字幕。")
         desc.setObjectName("muted")
         page.addWidget(desc)
 
@@ -121,6 +157,7 @@ class MainWindow(QMainWindow):
         device_label.setObjectName("section")
         card_layout.addWidget(device_label)
         self.devices = QComboBox()
+        self.devices.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.refresh_devices()
         device_row = QHBoxLayout()
         device_row.addWidget(self.devices, 1)
@@ -133,13 +170,28 @@ class MainWindow(QMainWindow):
         language_label.setObjectName("section")
         card_layout.addWidget(language_label)
         self.language = QComboBox()
-        self.language.addItems(["Chinese", "English", "Japanese", "Korean", "French", "German", "Spanish"])
-        card_layout.addWidget(self.language)
+        for title, code in [("简体中文", "Chinese"), ("英语", "English"), ("日语", "Japanese"),
+                            ("韩语", "Korean"), ("法语", "French"), ("德语", "German"), ("西班牙语", "Spanish")]:
+            self.language.addItem(title, code)
         self.caption_mode = QComboBox()
-        self.caption_mode.addItem("语义优先：减少短语被拆开（最长收集 4 秒）", "meaning")
-        self.caption_mode.addItem("速度优先：更快出字幕（最长收集 2 秒）", "speed")
-        card_layout.addWidget(QLabel("字幕模式"))
-        card_layout.addWidget(self.caption_mode)
+        self.caption_mode.addItem("语义优先 · 完整表达", "meaning")
+        self.caption_mode.addItem("速度优先 · 更快显示", "speed")
+        self.caption_mode.setToolTip("语义优先：最多收集 4 秒音频；速度优先：最多收集 2 秒。遇到停顿会提前提交。")
+        # Place both fields in a row; explicit control heights prevent layout compression.
+        card_layout.removeWidget(language_label)
+        fields = QHBoxLayout()
+        fields.setSpacing(16)
+        language_column = QVBoxLayout()
+        language_column.addWidget(language_label)
+        language_column.addWidget(self.language)
+        mode_column = QVBoxLayout()
+        mode_label = QLabel("字幕模式")
+        mode_label.setObjectName("section")
+        mode_column.addWidget(mode_label)
+        mode_column.addWidget(self.caption_mode)
+        fields.addLayout(language_column, 1)
+        fields.addLayout(mode_column, 2)
+        card_layout.addLayout(fields)
         page.addWidget(card)
 
         buttons = QHBoxLayout()
@@ -179,19 +231,31 @@ class MainWindow(QMainWindow):
         original_title.setObjectName("section")
         self.original = QLabel("播放视频后，识别内容会显示在这里。")
         self.original.setWordWrap(True)
+        self.original.setMinimumHeight(32)
+        self.original.setTextFormat(Qt.TextFormat.PlainText)
         translated_title = QLabel("翻译字幕")
         translated_title.setObjectName("section")
         self.translated = QLabel("—")
         self.translated.setWordWrap(True)
-        self.translated.setStyleSheet("font-size:19px;font-weight:600;color:#9fc0ff;")
+        self.translated.setMinimumHeight(48)
+        self.translated.setTextFormat(Qt.TextFormat.PlainText)
+        self.translated.setStyleSheet("font-size:21px;font-weight:600;color:#b5caff;")
         for widget in (original_title, self.original, translated_title, self.translated):
             text_layout.addWidget(widget)
         page.addWidget(text_card, 1)
 
-        note = QLabel("音频与文本在本机处理。模型首次下载后可离线使用。")
+        note = QLabel("本地处理  ·  离线识别与翻译  ·  音频不上传")
         note.setObjectName("muted")
         note.setAlignment(Qt.AlignmentFlag.AlignCenter)
         page.addWidget(note)
+        for combo in (self.devices, self.language, self.caption_mode):
+            combo.setFixedHeight(44)
+            combo.view().setMinimumWidth(280)
+        for button in (self.refresh_button, self.start_button, self.stop_button, self.overlay_button):
+            button.setFixedHeight(44)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+        for label in (device_label, language_label, mode_label, status_label, original_title, translated_title):
+            label.setMinimumHeight(24)
 
     def refresh_devices(self) -> None:
         selected = self.devices.currentData()
@@ -222,7 +286,7 @@ class MainWindow(QMainWindow):
         self.thread = QThread(self)
         meaning_first = self.caption_mode.currentData() == "meaning"
         self.engine = SubtitleEngine(device_id, EngineConfig(
-            target_language=self.language.currentText(),
+            target_language=self.language.currentData(),
             max_utterance_seconds=4.0 if meaning_first else 2.0,
             utterance_silence_seconds=0.45 if meaning_first else 0.3,
         ))
@@ -294,8 +358,13 @@ class MainWindow(QMainWindow):
 
 
 def main() -> None:
+    if sys.platform == "win32":
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Qwen.LocalSubtitles.Desktop")
     app = QApplication(sys.argv)
-    app.setFont(QFont("Segoe UI", 10))
+    app.setStyle("Fusion")
+    app.setFont(QFont("Microsoft YaHei UI", 10))
+    app.setWindowIcon(QIcon(str(ASSET_DIR / "app-icon.ico")))
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
@@ -303,6 +372,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
 

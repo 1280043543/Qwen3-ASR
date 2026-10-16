@@ -26,3 +26,7 @@ qwen-local-subtitles = "qwen_local_subtitles.app:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["qwen_local_subtitles*"]
+
+[tool.setuptools.package-data]
+qwen_local_subtitles = ["assets/*.png", "assets/*.ico", "assets/*.svg", "assets/*.md"]
+

@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$InstallRoot = (Split-Path -Parent $PSScriptRoot)
 )
 $ErrorActionPreference = 'Stop'
@@ -11,7 +11,7 @@ $shortcutName = '本地实时字幕'
 $desktop = [Environment]::GetFolderPath('Desktop')
 $programs = Join-Path ([Environment]::GetFolderPath('Programs')) $shortcutName
 New-Item -ItemType Directory -Path $programs -Force | Out-Null
-$icon = Join-Path $InstallRoot '.local\client.ico'
+$icon = Join-Path $InstallRoot 'desktop-translator\qwen_local_subtitles\assets\app-icon.ico'
 if (-not (Test-Path -LiteralPath $icon)) { $icon = $pythonw }
 
 $wsh = New-Object -ComObject WScript.Shell
@@ -26,3 +26,4 @@ foreach ($folder in @($desktop, $programs)) {
     $shortcut.Save()
     Write-Output $shortcutPath
 }
+
