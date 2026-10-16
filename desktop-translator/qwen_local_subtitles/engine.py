@@ -13,6 +13,8 @@ import torch
 from PySide6.QtCore import QObject, Signal, Slot
 from qwen_asr import Qwen3ASRModel
 
+SYSTEM_DEFAULT_DEVICE = "__system_default__"
+
 
 @dataclass(frozen=True)
 class EngineConfig:
@@ -41,6 +43,7 @@ class SubtitleEngine(QObject):
     translation = Signal(str)
     error = Signal(str)
     finished = Signal()
+    audio_level = Signal(float)
 
     def __init__(self, device_id: str, config: EngineConfig | None = None) -> None:
         super().__init__()
@@ -48,9 +51,10 @@ class SubtitleEngine(QObject):
         self.config = config or EngineConfig()
         self._stop_event = threading.Event()
         frame_count = max(1, int(self.config.max_buffer_seconds / self.config.capture_frame_seconds))
-        self._audio_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=frame_count)
+        self._audio_queue: queue.Queue[np.ndarray | None] = queue.Queue(maxsize=frame_count)
         self._dropped_frames = 0
         self._error_message: str | None = None
+        self._active_device_name = ""
 
     @Slot()
     def run(self) -> None:
@@ -76,7 +80,7 @@ class SubtitleEngine(QObject):
             self._check_ollama()
             if self._stop_event.is_set():
                 return
-            self.status.emit("正在监听系统播放音频")
+            self.status.emit(f"正在监听：{self._active_device_name}")
             self._transcribe_utterances(model)
         except Exception as exc:
             self._error_message = f"{type(exc).__name__}: {exc}"
@@ -95,36 +99,64 @@ class SubtitleEngine(QObject):
     def _capture_audio(self) -> None:
         """Continuously read loopback audio; inference never blocks this reader."""
         try:
-            mic = sc.get_microphone(id=self.device_id, include_loopback=True)
             frame_samples = max(
                 1,
                 int(self.config.sample_rate * self.config.capture_frame_seconds),
             )
-            with mic.recorder(samplerate=self.config.sample_rate) as recorder:
-                while not self._stop_event.is_set():
-                    audio = recorder.record(numframes=frame_samples)
-                    if audio.size == 0:
+            follow_default = self.device_id == SYSTEM_DEFAULT_DEVICE
+            while not self._stop_event.is_set():
+                speaker = sc.default_speaker() if follow_default else None
+                if follow_default and speaker is None:
+                    raise RuntimeError("没有可用的系统播放设备，请先连接扬声器或耳机。")
+                source_id = speaker.id if follow_default else self.device_id
+                mic = sc.get_microphone(id=source_id, include_loopback=True)
+                self._active_device_name = mic.name
+                self.status.emit(f"音频来源：{mic.name}")
+                self._reset_audio_buffer()
+                try:
+                    with mic.recorder(samplerate=self.config.sample_rate) as recorder:
+                        while not self._stop_event.is_set():
+                            if follow_default:
+                                current = sc.default_speaker()
+                                if current is not None and current.id != source_id:
+                                    break
+                            audio = recorder.record(numframes=frame_samples)
+                            if audio.size == 0:
+                                continue
+                            mono = np.asarray(audio, dtype=np.float32)
+                            if mono.ndim == 2:
+                                mono = mono.mean(axis=1)
+                            self.audio_level.emit(float(np.sqrt(np.mean(np.square(mono)))))
+                            try:
+                                self._audio_queue.put_nowait(mono)
+                            except queue.Full:
+                                try:
+                                    self._audio_queue.get_nowait()
+                                except queue.Empty:
+                                    pass
+                                self._audio_queue.put_nowait(mono)
+                                self._dropped_frames += 1
+                                if self._dropped_frames % 20 == 1:
+                                    self.status.emit("本地模型处理较慢，已丢弃较早音频以保持字幕接近实时")
+                except Exception:
+                    current = sc.default_speaker() if follow_default else None
+                    if current is not None and current.id != source_id:
                         continue
-                    mono = np.asarray(audio, dtype=np.float32)
-                    if mono.ndim == 2:
-                        mono = mono.mean(axis=1)
-                    try:
-                        self._audio_queue.put_nowait(mono)
-                    except queue.Full:
-                        # Keep the newest sound so subtitles recover close to live after a slow model call.
-                        try:
-                            self._audio_queue.get_nowait()
-                        except queue.Empty:
-                            pass
-                        self._audio_queue.put_nowait(mono)
-                        self._dropped_frames += 1
-                        if self._dropped_frames % 20 == 1:
-                            self.status.emit("本地模型处理较慢，已丢弃较早音频以保持字幕接近实时")
+                    raise
         except Exception as exc:
             if not self._stop_event.is_set():
                 self._error_message = f"系统音频采集失败：{type(exc).__name__}: {exc}"
                 self.error.emit(self._error_message)
                 self._stop_event.set()
+
+    def _reset_audio_buffer(self) -> None:
+        while True:
+            try:
+                self._audio_queue.get_nowait()
+            except queue.Empty:
+                break
+        # A source change ends the old utterance; don't combine two different devices.
+        self._audio_queue.put_nowait(None)
 
     def _transcribe_utterances(self, model: Qwen3ASRModel) -> None:
         cfg = self.config
@@ -142,6 +174,12 @@ class SubtitleEngine(QObject):
             except queue.Empty:
                 # The capture reader can be between 250 ms recording calls; silence frames
                 # from the device, rather than a temporarily empty queue, end an utterance.
+                continue
+
+            if frame is None:
+                utterance = []
+                pre_roll.clear()
+                silent_frames = 0
                 continue
 
             level = float(np.sqrt(np.mean(np.square(frame)))) if frame.size else 0.0
@@ -228,3 +266,4 @@ class SubtitleEngine(QObject):
         )
         response.raise_for_status()
         return response.json().get("message", {}).get("content", "").strip()
+

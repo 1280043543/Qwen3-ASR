@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .engine import EngineConfig, SubtitleEngine, available_loopbacks
+from .engine import EngineConfig, SubtitleEngine, SYSTEM_DEFAULT_DEVICE, available_loopbacks
 
 
 STYLE = """
@@ -102,16 +102,13 @@ class MainWindow(QMainWindow):
         device_label.setObjectName("section")
         card_layout.addWidget(device_label)
         self.devices = QComboBox()
-        try:
-            self.loopbacks = available_loopbacks()
-            for device_id, name in self.loopbacks:
-                self.devices.addItem(name, device_id)
-        except Exception as exc:
-            self.loopbacks = []
-            self.devices.addItem(f"读取设备失败：{exc}", "")
-        if not self.loopbacks:
-            self.devices.addItem("未找到系统回环设备", "")
-        card_layout.addWidget(self.devices)
+        self.refresh_devices()
+        device_row = QHBoxLayout()
+        device_row.addWidget(self.devices, 1)
+        self.refresh_button = QPushButton("刷新设备")
+        self.refresh_button.clicked.connect(self.refresh_devices)
+        device_row.addWidget(self.refresh_button)
+        card_layout.addLayout(device_row)
 
         language_label = QLabel("翻译成")
         language_label.setObjectName("section")
@@ -146,6 +143,8 @@ class MainWindow(QMainWindow):
         self.status.setWordWrap(True)
         status_layout.addWidget(status_label)
         status_layout.addWidget(self.status)
+        self.audio_status = QLabel("声音输入：未监听")
+        status_layout.addWidget(self.audio_status)
         page.addWidget(status_card)
 
         text_card = QFrame()
@@ -170,13 +169,28 @@ class MainWindow(QMainWindow):
         note.setAlignment(Qt.AlignmentFlag.AlignCenter)
         page.addWidget(note)
 
+    def refresh_devices(self) -> None:
+        selected = self.devices.currentData()
+        self.devices.clear()
+        self.devices.addItem("跟随系统默认播放设备（推荐）", SYSTEM_DEFAULT_DEVICE)
+        try:
+            self.loopbacks = available_loopbacks()
+            for device_id, name in self.loopbacks:
+                self.devices.addItem(name, device_id)
+        except Exception:
+            self.loopbacks = []
+        index = self.devices.findData(selected)
+        self.devices.setCurrentIndex(index if index >= 0 else 0)
+
     def start_capture(self) -> None:
+        self.refresh_devices()
         device_id = self.devices.currentData()
         if not device_id:
             self.status.setText("未找到系统回环设备，请确认 Windows 音频设备正常后重启应用。")
             return
         self.start_button.setEnabled(False)
         self.devices.setEnabled(False)
+        self.refresh_button.setEnabled(False)
         self.language.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.status.setText("正在启动本地识别…")
@@ -188,6 +202,7 @@ class MainWindow(QMainWindow):
         self.engine.transcript.connect(self.original.setText)
         self.engine.translation.connect(self.show_translation)
         self.engine.error.connect(self.show_error)
+        self.engine.audio_level.connect(self.show_audio_level)
         self.engine.finished.connect(self.thread.quit)
         self.engine.finished.connect(self.engine.deleteLater)
         self.thread.finished.connect(self.capture_finished)
@@ -202,10 +217,12 @@ class MainWindow(QMainWindow):
     def capture_finished(self) -> None:
         self.start_button.setEnabled(True)
         self.devices.setEnabled(True)
+        self.refresh_button.setEnabled(True)
         self.language.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.thread = None
         self.engine = None
+        self.audio_status.setText("声音输入：未监听")
         if self._close_requested:
             self._close_requested = False
             self.close()
@@ -213,6 +230,9 @@ class MainWindow(QMainWindow):
     def show_translation(self, text: str) -> None:
         self.translated.setText(text)
         self.overlay.set_text(self.original.text(), text)
+
+    def show_audio_level(self, level: float) -> None:
+        self.audio_status.setText("声音输入：有声音" if level >= 0.006 else "声音输入：安静或无声音")
 
     def show_error(self, message: str) -> None:
         self.status.setText(message)
@@ -246,3 +266,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

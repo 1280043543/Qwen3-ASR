@@ -23,8 +23,10 @@ On first launch, Qwen3-ASR weights are downloaded from Hugging Face and cached l
 
 ## Notes
 
-- The app captures the default Windows output device. Switch Windows output before starting if needed.
+- Keep "Follow system default output" selected to follow Windows when switching between speakers and headphones. The device list can also be refreshed for manual selection.
+- The status area shows the active capture device and whether audio is arriving; silence on the wrong output device is visible before waiting for a subtitle.
 - Headphones avoid capturing room audio from speakers.
 - Ollama must be running locally and the selected model must be present.
 - Models are separate downloads and retain their own licenses. The ASR code in this repository is Apache-2.0; review each model's card/license before redistribution.
 - If local inference falls behind, the app drops the oldest buffered audio to keep captions near the current playback position; it shows a status notice when this happens. GPU memory use depends on the ASR and Ollama model versions. If model loading fails, close other GPU-heavy applications or use CPU mode (slower).
+
