@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from .engine import EngineConfig, SubtitleEngine, SYSTEM_DEFAULT_DEVICE, available_loopbacks
+from .windows_shell import set_process_app_id
 
 
 STYLE = """
@@ -502,20 +503,20 @@ class MainWindow(QMainWindow):
 
 
 def main() -> None:
-    if sys.platform == "win32":
-        import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Qwen.LocalSubtitles.Desktop")
+    set_process_app_id()
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setFont(QFont("Microsoft YaHei UI", 10))
     app.setWindowIcon(QIcon(str(ASSET_DIR / "app-icon.ico")))
     window = MainWindow()
+    window.setWindowIcon(app.windowIcon())
     window.show()
     sys.exit(app.exec())
 
 
 if __name__ == "__main__":
     main()
+
 
 
 

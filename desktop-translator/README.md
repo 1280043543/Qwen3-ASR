@@ -11,6 +11,7 @@ Audio and subtitle text stay on this computer. The first run downloads model wei
 - Local translation through Ollama (default model: `qwen3:4b-instruct-2507-q4_K_M`).
 - Main control window and always-on-top subtitle overlay.
 - The desktop interface uses fixed-height controls, a scrollable layout for smaller windows, Chinese language labels, and a packaged icon shared by the window and Windows shortcuts.
+- Shortcut installation writes the same explicit Windows AppUserModelID used by the launcher and application. It also updates existing taskbar shortcuts that point to this installation so Windows can associate the custom icon with the running app.
 - Drag anywhere on the subtitle panel, including the text; Windows handles the move. Position, target language, caption mode, main-window geometry, subtitle size/color/background opacity are remembered between launches. Expand "字幕外观" to change the appearance.
 - The overlay fits the available screen and fades away after 6 seconds without a new caption. It reappears on the next caption while overlay display is enabled.
 - Translation receives up to three previous source fragments (at most 600 characters) to help resolve pronouns and terminology. Context is cleared on audio-source reset. This does not repair ASR errors or guarantee translation accuracy.
@@ -36,6 +37,7 @@ On first launch, Qwen3-ASR weights are downloaded from Hugging Face and cached l
 - Ollama must be running locally and the selected model must be present.
 - Models are separate downloads and retain their own licenses. The ASR code in this repository is Apache-2.0; review each model's card/license before redistribution.
 - If the audio queue fills, the app drops the backlog, resets phrase/translation context, and shows a status notice. Results from before the reset are discarded, including work already in flight. GPU memory use depends on the ASR and Ollama model versions. If model loading fails, close other GPU-heavy applications or use CPU mode (slower).
+
 
 
 

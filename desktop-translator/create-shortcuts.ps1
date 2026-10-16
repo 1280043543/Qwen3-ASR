@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$InstallRoot = (Split-Path -Parent $PSScriptRoot)
 )
 $ErrorActionPreference = 'Stop'
@@ -15,8 +15,17 @@ $icon = Join-Path $InstallRoot 'desktop-translator\qwen_local_subtitles\assets\a
 if (-not (Test-Path -LiteralPath $icon)) { $icon = $pythonw }
 
 $wsh = New-Object -ComObject WScript.Shell
-foreach ($folder in @($desktop, $programs)) {
-    $shortcutPath = Join-Path $folder ($shortcutName + '.lnk')
+$shortcutPaths = @((Join-Path $desktop ($shortcutName + '.lnk')), (Join-Path $programs ($shortcutName + '.lnk')))
+$pinnedFolder = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar'
+if (Test-Path -LiteralPath $pinnedFolder) {
+    foreach ($file in Get-ChildItem -LiteralPath $pinnedFolder -Filter '*.lnk') {
+        $pinned = $wsh.CreateShortcut($file.FullName)
+        if ($pinned.Arguments.Contains($launcher) -or ($pinned.TargetPath -eq $pythonw -and $pinned.WorkingDirectory -eq $InstallRoot)) {
+            $shortcutPaths += $file.FullName
+        }
+    }
+}
+foreach ($shortcutPath in $shortcutPaths) {
     $shortcut = $wsh.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = $pythonw
     $shortcut.Arguments = '"' + $launcher + '"'
@@ -26,4 +35,8 @@ foreach ($folder in @($desktop, $programs)) {
     $shortcut.Save()
     Write-Output $shortcutPath
 }
+$python = Join-Path $InstallRoot '.venv\Scripts\python.exe'
+& $python -m qwen_local_subtitles.windows_shell @shortcutPaths
+if ($LASTEXITCODE -ne 0) { throw 'Unable to set taskbar identity on shortcuts.' }
+
 

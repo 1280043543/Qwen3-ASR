@@ -59,6 +59,8 @@ def ensure_ollama() -> None:
 
 def launch() -> None:
     os.chdir(ROOT)
+    from qwen_local_subtitles.windows_shell import set_process_app_id
+    set_process_app_id()
     model_dir = ROOT / ".models" / "Qwen3-ASR-0.6B"
     if (model_dir / "config.json").is_file():
         os.environ["QWEN_ASR_MODEL"] = str(model_dir)
@@ -79,3 +81,4 @@ if __name__ == "__main__":
             "本地实时字幕",
             0x10,
         )
+
