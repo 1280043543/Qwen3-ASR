@@ -17,7 +17,7 @@ Audio and subtitle text stay on this computer. The first run downloads model wei
 1. Install Python 3.11 or 3.12 and a current NVIDIA driver (CUDA GPU recommended).
 2. Install Ollama and download the translation model once: `ollama pull qwen3:4b`.
 3. From this repository root, create and activate a virtual environment, install PyTorch for your CUDA version from the official PyTorch selector, then run `pip install -e "desktop-translator[desktop]"`.
-4. Start with `python -m qwen_asr.desktop_translator`.
+4. Start the app with `qwen-local-subtitles`.
 
 On first launch, Qwen3-ASR weights are downloaded from Hugging Face and cached locally. Model downloads require internet; audio processing and translation use local models.
 
