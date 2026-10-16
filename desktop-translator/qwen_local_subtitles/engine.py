@@ -18,7 +18,7 @@ from qwen_asr import Qwen3ASRModel
 class EngineConfig:
     target_language: str = "Chinese"
     asr_model: str = os.environ.get("QWEN_ASR_MODEL", "Qwen/Qwen3-ASR-0.6B")
-    translation_model: str = "qwen3:4b"
+    translation_model: str = "qwen3:4b-instruct-2507-q4_K_M"
     ollama_url: str = "http://127.0.0.1:11434"
     sample_rate: int = 16_000
     capture_frame_seconds: float = 0.25
@@ -72,7 +72,7 @@ class SubtitleEngine(QObject):
             )
             if self._stop_event.is_set():
                 return
-            self.status.emit("连接本地翻译模型…")
+            self.status.emit("正在加载本地翻译模型…")
             self._check_ollama()
             if self._stop_event.is_set():
                 return
@@ -192,6 +192,17 @@ class SubtitleEngine(QObject):
             raise RuntimeError(
                 f"本地未找到翻译模型 {self.config.translation_model}。请先在 Ollama 中下载该模型。"
             )
+        # Load weights before listening so the first subtitle doesn't pay the cold-load cost.
+        preload = requests.post(
+            f"{self.config.ollama_url}/api/generate",
+            json={
+                "model": self.config.translation_model,
+                "stream": False,
+                "options": {"num_ctx": 2048},
+            },
+            timeout=(3, 180),
+        )
+        preload.raise_for_status()
 
     def _translate(self, text: str) -> str:
         response = requests.post(
