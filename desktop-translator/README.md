@@ -8,14 +8,14 @@ Audio and subtitle text stay on this computer. The first run downloads model wei
 
 - Windows system playback capture (WASAPI loopback via SoundCard); no WPS or browser integration is required.
 - Qwen3-ASR 0.6B recognition on the local machine.
-- Local translation through Ollama (default model: `qwen3:4b`).
+- Local translation through Ollama (default model: `qwen3:4b-instruct-2507-q4_K_M`).
 - Main control window and always-on-top subtitle overlay.
 - Audio capture runs continuously in a separate reader. Local RMS-based voice activity segments phrases after a pause (up to 3 seconds per phrase); a bounded 8-second queue prevents slow inference from blocking capture. This is still chunked recognition rather than token streaming, and latency/voice threshold need real-world tuning.
 
 ## Install and run
 
 1. Install Python 3.11 or 3.12 and a current NVIDIA driver (CUDA GPU recommended).
-2. Install Ollama and download the translation model once: `ollama pull qwen3:4b`.
+2. Install Ollama and download the translation model once: `ollama pull qwen3:4b-instruct-2507-q4_K_M`.
 3. From this repository root, create and activate a virtual environment, install PyTorch for your CUDA version from the official PyTorch selector, then run `pip install -e "desktop-translator[desktop]"`.
 4. Start the app with `qwen-local-subtitles`.
 
