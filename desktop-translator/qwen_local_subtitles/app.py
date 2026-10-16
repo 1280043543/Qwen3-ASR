@@ -142,7 +142,7 @@ class MainWindow(QMainWindow):
         status_layout.setContentsMargins(18, 14, 18, 14)
         status_label = QLabel("状态")
         status_label.setObjectName("section")
-        self.status = QLabel("就绪。首次启动需要下载本地模型。")
+        self.status = QLabel("就绪。选择播放设备后，点击“开始监听”。")
         self.status.setWordWrap(True)
         status_layout.addWidget(status_label)
         status_layout.addWidget(self.status)
