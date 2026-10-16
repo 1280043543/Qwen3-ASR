@@ -22,3 +22,7 @@ wheels/
 .vscode/
 venv/
 env/
+# Local desktop installation
+.venv/
+.models/
+.local/
