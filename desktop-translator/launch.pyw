@@ -15,6 +15,10 @@ from urllib.request import urlopen
 ROOT = Path(__file__).resolve().parent.parent
 LOG_DIR = ROOT / ".local" / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+if sys.stdout is None or sys.stderr is None:
+    output_log = open(LOG_DIR / "output.log", "a", encoding="utf-8", buffering=1)
+    sys.stdout = output_log
+    sys.stderr = output_log
 logging.basicConfig(
     filename=LOG_DIR / "client.log",
     level=logging.INFO,
