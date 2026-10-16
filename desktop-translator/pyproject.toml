@@ -21,8 +21,8 @@ desktop = [
 ]
 
 [project.scripts]
-qwen-local-subtitles = "qwen_asr.desktop_translator.app:main"
+qwen-local-subtitles = "qwen_local_subtitles.app:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["qwen_asr.desktop_translator*"]
+include = ["qwen_local_subtitles*"]
