@@ -33,21 +33,31 @@ QPushButton:disabled { color: #78869a; background: #202a38; }
 """
 
 
-class Overlay(QWidget):
+class Overlay(QFrame):
     def __init__(self) -> None:
         super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setMinimumWidth(720)
+        self.resize(800, 180)
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
         self.setWindowTitle("Qwen Local Subtitles")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 14, 24, 14)
+        self.drag_hint = QLabel("⠿  按住字幕区域任意位置拖动")
+        self.drag_hint.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.drag_hint.setStyleSheet("color:#9aa8bb;font-size:12px;background:transparent;border:0;")
+        layout.addWidget(self.drag_hint)
         self.original = QLabel("等待播放音频…")
+        self.original.setWordWrap(True)
         self.original.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         self.original.setStyleSheet("color:#dce4ef;font-size:17px;background:transparent;")
         self.translated = QLabel("本地翻译字幕会显示在这里")
         self.translated.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         self.translated.setWordWrap(True)
         self.translated.setStyleSheet("color:white;font-size:25px;font-weight:700;background:transparent;")
+        for label in (self.drag_hint, self.original, self.translated):
+            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            label.setTextFormat(Qt.TextFormat.PlainText)
         for label in (self.original, self.translated):
             layout.addWidget(label)
         self.setStyleSheet("background:rgba(8,12,18,210);border:1px solid rgba(255,255,255,36);border-radius:12px;")
@@ -59,11 +69,19 @@ class Overlay(QWidget):
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
+            # Let Windows own the drag so it continues smoothly outside the overlay.
+            handle = self.windowHandle()
+            if handle is not None and handle.startSystemMove():
+                self._drag_offset = None
+                event.accept()
+                return
             self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
 
     def mouseMoveEvent(self, event) -> None:
         if self._drag_offset is not None and event.buttons() & Qt.MouseButton.LeftButton:
             self.move(event.globalPosition().toPoint() - self._drag_offset)
+            event.accept()
 
     def mouseReleaseEvent(self, event) -> None:
         self._drag_offset = None
@@ -76,6 +94,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(680, 590)
         self.setStyleSheet(STYLE)
         self.overlay = Overlay()
+        self._overlay_positioned = False
         self.thread: QThread | None = None
         self.engine: SubtitleEngine | None = None
         self._close_requested = False
@@ -242,8 +261,14 @@ class MainWindow(QMainWindow):
             self.overlay.hide()
             self.overlay_button.setText("显示字幕")
         else:
+            if not self._overlay_positioned:
+                screen = self.screen().availableGeometry()
+                self.overlay.move(
+                    screen.x() + (screen.width() - self.overlay.width()) // 2,
+                    screen.bottom() - self.overlay.height() - 60,
+                )
+                self._overlay_positioned = True
             self.overlay.show()
-            self.overlay.move(300, 720)
             self.overlay_button.setText("隐藏字幕")
 
     def closeEvent(self, event) -> None:
@@ -266,4 +291,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
