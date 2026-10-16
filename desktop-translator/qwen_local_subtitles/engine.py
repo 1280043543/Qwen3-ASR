@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import queue
 import threading
 from collections import deque
@@ -16,7 +17,7 @@ from qwen_asr import Qwen3ASRModel
 @dataclass(frozen=True)
 class EngineConfig:
     target_language: str = "Chinese"
-    asr_model: str = "Qwen/Qwen3-ASR-0.6B"
+    asr_model: str = os.environ.get("QWEN_ASR_MODEL", "Qwen/Qwen3-ASR-0.6B")
     translation_model: str = "qwen3:4b"
     ollama_url: str = "http://127.0.0.1:11434"
     sample_rate: int = 16_000
