@@ -60,8 +60,8 @@ class SubtitleEngine(QObject):
         )
         try:
             # Begin capture before loading the model so startup downloads don't freeze the audio path.
-            capture_thread.start()
             self.status.emit("正在缓存系统音频并加载本地语音识别模型…")
+            capture_thread.start()
             dtype = torch.float16 if torch.cuda.is_available() else torch.float32
             model = Qwen3ASRModel.from_pretrained(
                 self.config.asr_model,
@@ -69,8 +69,12 @@ class SubtitleEngine(QObject):
                 device_map="cuda:0" if torch.cuda.is_available() else "cpu",
                 max_new_tokens=128,
             )
+            if self._stop_event.is_set():
+                return
             self.status.emit("连接本地翻译模型…")
             self._check_ollama()
+            if self._stop_event.is_set():
+                return
             self.status.emit("正在监听系统播放音频")
             self._transcribe_utterances(model)
         except Exception as exc:
