@@ -199,6 +199,7 @@ class SubtitleEngine(QObject):
             json={
                 "model": self.config.translation_model,
                 "stream": False,
+                "think": False,
                 "messages": [
                     {
                         "role": "system",
@@ -210,7 +211,7 @@ class SubtitleEngine(QObject):
                     },
                     {"role": "user", "content": text},
                 ],
-                "options": {"temperature": 0.1},
+                "options": {"temperature": 0.1, "num_ctx": 2048, "num_predict": 256},
             },
             timeout=45,
         )
