@@ -78,6 +78,7 @@ class MainWindow(QMainWindow):
         self.overlay = Overlay()
         self.thread: QThread | None = None
         self.engine: SubtitleEngine | None = None
+        self._close_requested = False
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -196,7 +197,7 @@ class MainWindow(QMainWindow):
         if self.engine:
             self.engine.stop()
         self.stop_button.setEnabled(False)
-        self.status.setText("正在停止…")
+        self.status.setText("正在停止，等待当前识别任务结束…")
 
     def capture_finished(self) -> None:
         self.start_button.setEnabled(True)
@@ -205,6 +206,9 @@ class MainWindow(QMainWindow):
         self.stop_button.setEnabled(False)
         self.thread = None
         self.engine = None
+        if self._close_requested:
+            self._close_requested = False
+            self.close()
 
     def show_translation(self, text: str) -> None:
         self.translated.setText(text)
@@ -223,8 +227,11 @@ class MainWindow(QMainWindow):
             self.overlay_button.setText("隐藏字幕")
 
     def closeEvent(self, event) -> None:
-        if self.engine:
-            self.engine.stop()
+        if self.thread and self.thread.isRunning():
+            self._close_requested = True
+            self.stop_capture()
+            event.ignore()
+            return
         self.overlay.close()
         event.accept()
 
